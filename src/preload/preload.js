@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('keynest', {
 
   createFolder: (payload) => invoke('folder:create', payload),
   renameFolder: (payload) => invoke('folder:rename', payload),
+  reorderFolder: (payload) => invoke('folder:reorder', payload),
+  moveFolder: (payload) => invoke('folder:move', payload),
+  nudgeFolder: (payload) => invoke('folder:nudge', payload),
   deleteFolder: (payload) => invoke('folder:delete', payload),
 
   createEntry: (payload) => invoke('entry:create', payload),

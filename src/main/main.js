@@ -324,6 +324,21 @@ function registerIpc() {
     return session.renameFolder(id, name);
   });
 
+  handle('folder:reorder', async ({ id, targetId, position }) => {
+    requireUnlocked();
+    return session.reorderFolder(id, targetId, position === 'after' ? 'after' : 'before');
+  });
+
+  handle('folder:move', async ({ id, parentId }) => {
+    requireUnlocked();
+    return session.moveFolder(id, parentId || null);
+  });
+
+  handle('folder:nudge', async ({ id, delta }) => {
+    requireUnlocked();
+    return session.nudgeFolder(id, Number(delta) < 0 ? -1 : 1);
+  });
+
   handle('folder:delete', async ({ id }) => {
     requireUnlocked();
     return session.deleteFolder(id);

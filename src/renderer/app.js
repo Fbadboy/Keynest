@@ -74,8 +74,13 @@ function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
 }
 
-function sortByCreated(list) {
-  return [...list].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+function sortByOrder(list) {
+  return [...list].sort((a, b) => {
+    const oa = Number.isFinite(a.order) ? a.order : Number.MAX_SAFE_INTEGER;
+    const ob = Number.isFinite(b.order) ? b.order : Number.MAX_SAFE_INTEGER;
+    if (oa !== ob) return oa - ob;
+    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+  });
 }
 
 function folderById(id) {
@@ -83,7 +88,7 @@ function folderById(id) {
 }
 
 function childrenOf(id) {
-  return sortByCreated(state.folders.filter((f) => (f.parentId || null) === id));
+  return sortByOrder(state.folders.filter((f) => (f.parentId || null) === id));
 }
 
 function subtreeIds(id) {
@@ -99,6 +104,20 @@ function subtreeIds(id) {
     }
   }
   return ids;
+}
+
+/** 可作为移动目标的目录（按树序展开，排除自身与子孙） */
+function destinationList(excludeIds) {
+  const out = [];
+  const walk = (parentId, depth) => {
+    for (const folder of childrenOf(parentId)) {
+      if (excludeIds.has(folder.id)) continue;
+      out.push({ folder, depth });
+      walk(folder.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
 }
 
 function folderPath(id) {
@@ -347,6 +366,16 @@ function appendFolderNode(container, folder, depth) {
     openFolderMenu(event, folder);
   });
 
+  // 拖动排序：只允许在同一父级内调整，避免误改层级
+  row.draggable = true;
+  row.addEventListener('dragstart', (event) => beginDrag(event, folder));
+  row.addEventListener('dragover', (event) => dragOverRow(event, folder));
+  row.addEventListener('dragleave', (event) => {
+    if (!row.contains(event.relatedTarget)) row.classList.remove('drop-before', 'drop-after');
+  });
+  row.addEventListener('drop', (event) => dropOnRow(event, folder));
+  row.addEventListener('dragend', endDrag);
+
   container.appendChild(row);
 
   if (children.length && state.expanded.has(folder.id)) {
@@ -358,6 +387,76 @@ function toggleFolder(id) {
   if (state.expanded.has(id)) state.expanded.delete(id);
   else state.expanded.add(id);
   renderTree();
+}
+
+/* ─────────────── 目录拖动排序 ─────────────── */
+
+const drag = { id: null, overId: null, position: null };
+
+function clearDropMarkers() {
+  dom.tree.querySelectorAll('.tree-row').forEach((row) => {
+    row.classList.remove('drop-before', 'drop-after');
+  });
+  drag.overId = null;
+  drag.position = null;
+}
+
+function beginDrag(event, folder) {
+  drag.id = folder.id;
+  drag.overId = null;
+  drag.position = null;
+  closeContextMenu();
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', folder.id);
+  event.currentTarget.classList.add('dragging');
+}
+
+function dragOverRow(event, folder) {
+  if (!drag.id || drag.id === folder.id) return;
+  const source = folderById(drag.id);
+  if (!source || (source.parentId || null) !== (folder.parentId || null)) return;
+
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+
+  const rect = event.currentTarget.getBoundingClientRect();
+  const position = event.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
+  if (drag.overId === folder.id && drag.position === position) return;
+
+  clearDropMarkers();
+  drag.overId = folder.id;
+  drag.position = position;
+  event.currentTarget.classList.add(position === 'before' ? 'drop-before' : 'drop-after');
+}
+
+async function dropOnRow(event, folder) {
+  if (!drag.id || drag.id === folder.id) return;
+  event.preventDefault();
+  const sourceId = drag.id;
+  const position = drag.position === 'after' ? 'after' : 'before';
+  clearDropMarkers();
+  drag.id = null;
+  await commitOrder(api.reorderFolder({ id: sourceId, targetId: folder.id, position }));
+}
+
+function endDrag() {
+  drag.id = null;
+  clearDropMarkers();
+  dom.tree.querySelectorAll('.tree-row.dragging').forEach((row) => row.classList.remove('dragging'));
+}
+
+async function commitOrder(promise) {
+  const res = await promise;
+  if (!res.ok) {
+    toast(res.error || '调整顺序失败');
+    return;
+  }
+  await refresh();
+  render();
+}
+
+async function nudgeFolderFlow(folder, delta) {
+  await commitOrder(api.nudgeFolder({ id: folder.id, delta }));
 }
 
 function selectFolder(id) {
@@ -648,9 +747,19 @@ function renderForm() {
 /* ─────────────── 目录操作 ─────────────── */
 
 function openFolderMenu(event, folder) {
+  const siblings = childrenOf(folder.parentId || null);
+  const index = siblings.findIndex((f) => f.id === folder.id);
   const items = [
     { label: '新建子目录', act: () => createFolderFlow(folder.id) },
     { label: '重命名', act: () => renameFolderFlow(folder) },
+    { label: '移动到…', act: () => moveFolderFlow(folder) },
+    { sep: true },
+    { label: '上移', disabled: index <= 0, act: () => nudgeFolderFlow(folder, -1) },
+    {
+      label: '下移',
+      disabled: index < 0 || index >= siblings.length - 1,
+      act: () => nudgeFolderFlow(folder, 1),
+    },
     { sep: true },
     { label: '删除目录', danger: true, act: () => deleteFolderFlow(folder) },
   ];
@@ -668,12 +777,16 @@ function openContextMenu(x, y, items) {
       continue;
     }
     const el = document.createElement('div');
-    el.className = 'menu-item' + (item.danger ? ' danger' : '');
+    el.className = 'menu-item' + (item.danger ? ' danger' : '') + (item.disabled ? ' disabled' : '');
     el.textContent = item.label;
-    el.addEventListener('click', () => {
-      closeContextMenu();
-      item.act();
-    });
+    if (item.disabled) {
+      el.setAttribute('aria-disabled', 'true');
+    } else {
+      el.addEventListener('click', () => {
+        closeContextMenu();
+        item.act();
+      });
+    }
     menu.appendChild(el);
   }
   menu.classList.remove('hidden');
@@ -721,6 +834,75 @@ async function renameFolderFlow(folder) {
   }
   await refresh();
   render();
+}
+
+async function moveFolderFlow(folder) {
+  const blocked = subtreeIds(folder.id);
+  const destinations = destinationList(blocked);
+  const currentParent = folder.parentId || null;
+
+  const item = (id, name, depth, isCurrent) => `
+    <button
+      class="move-item${isCurrent ? ' current' : ''}"
+      data-id="${esc(id)}"
+      style="--depth:${depth}"
+      ${isCurrent ? 'disabled' : ''}
+    >
+      <span class="move-name">${esc(name)}</span>
+      ${isCurrent ? '<span class="move-tag">当前位置</span>' : ''}
+    </button>`;
+
+  const rows = [item('', '根目录（顶层）', 0, currentParent === null)];
+  for (const entry of destinations) {
+    rows.push(item(entry.folder.id, entry.folder.name, entry.depth + 1, entry.folder.id === currentParent));
+  }
+
+  const modal = openModal(`
+    <h3>移动「${esc(folder.name)}」</h3>
+    <p class="modal-desc">选择目标位置，该目录及其所有子目录会一起移动。</p>
+    <div class="move-list" id="move-list">${rows.join('')}</div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="m-cancel">取消</button>
+      <button class="btn btn-primary" id="m-ok" disabled>移动</button>
+    </div>
+  `);
+
+  const okBtn = modal.querySelector('#m-ok');
+  let selected = null;
+
+  modal.querySelectorAll('.move-item').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      modal.querySelectorAll('.move-item').forEach((el) => el.classList.remove('selected'));
+      btn.classList.add('selected');
+      selected = btn.dataset.id;
+      okBtn.disabled = false;
+    });
+  });
+
+  modal.querySelector('#m-cancel').addEventListener('click', closeModal);
+  okBtn.addEventListener('click', async () => {
+    if (selected === null) return;
+    okBtn.disabled = true;
+    const res = await api.moveFolder({ id: folder.id, parentId: selected || null });
+    if (!res.ok) {
+      okBtn.disabled = false;
+      toast(res.error || '移动失败');
+      return;
+    }
+    closeModal();
+    await refresh();
+    // 展开新的上级路径，让移动后的目录可见
+    let parent = folderById(folder.id);
+    while (parent && parent.parentId) {
+      state.expanded.add(parent.parentId);
+      parent = folderById(parent.parentId);
+    }
+    state.selectedFolderId = folder.id;
+    state.selectedEntryId = null;
+    render();
+    toast(`已移动到「${selected ? folderPath(selected) : '根目录'}」`);
+  });
 }
 
 async function deleteFolderFlow(folder) {
@@ -1064,6 +1246,12 @@ function bindGlobalEvents() {
   });
   window.addEventListener('blur', closeContextMenu);
   window.addEventListener('resize', closeContextMenu);
+
+  // 拖到树外面时清掉插入位置提示
+  dom.tree.addEventListener('dragleave', (event) => {
+    if (!dom.tree.contains(event.relatedTarget)) clearDropMarkers();
+  });
+  dom.tree.addEventListener('drop', (event) => event.preventDefault());
 
   document.addEventListener('keydown', (event) => {
     const mod = event.ctrlKey || event.metaKey;

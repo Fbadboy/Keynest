@@ -28,6 +28,44 @@ function str(value, max = 4096) {
   return String(value).slice(0, max);
 }
 
+function parentOf(folder) {
+  return folder.parentId || null;
+}
+
+/** 同级目录按 order 升序；order 相同或缺失时退化为 createdAt、再退化为原数组位置 */
+function compareSiblings(a, b) {
+  const oa = Number.isFinite(a.order) ? a.order : Number.MAX_SAFE_INTEGER;
+  const ob = Number.isFinite(b.order) ? b.order : Number.MAX_SAFE_INTEGER;
+  if (oa !== ob) return oa - ob;
+  const ca = String(a.createdAt || '');
+  const cb = String(b.createdAt || '');
+  if (ca !== cb) return ca < cb ? -1 : 1;
+  return 0;
+}
+
+/**
+ * 归一化目录顺序：每个父级下的子目录 order 从 0 连续递增。
+ * 旧版本数据没有 order 字段，按 createdAt 补号——正好等于旧版的展示顺序，
+ * 因此升级后用户看到的目录顺序不会发生变化。
+ */
+function normalizeOrder(folders) {
+  const groups = new Map();
+  for (const folder of folders) {
+    const key = parentOf(folder);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(folder);
+  }
+  const result = [];
+  for (const group of groups.values()) {
+    group.sort(compareSiblings);
+    group.forEach((folder, index) => {
+      folder.order = index;
+      result.push(folder);
+    });
+  }
+  return result;
+}
+
 class VaultSession {
   constructor(store) {
     this.store = store;
@@ -52,10 +90,11 @@ class VaultSession {
     const salt = newSalt();
     const key = deriveKey(masterPassword, salt);
     const vault = emptyVault();
-    vault.folders = DEFAULT_FOLDERS.map((name) => ({
+    vault.folders = DEFAULT_FOLDERS.map((name, index) => ({
       id: makeId(),
       name,
       parentId: null,
+      order: index,
       createdAt: now(),
     }));
     this.persist(key, salt, vault, KDF_PARAMS);
@@ -95,7 +134,7 @@ class VaultSession {
 
   normalizeVault(vault) {
     const out = emptyVault();
-    out.folders = Array.isArray(vault.folders) ? vault.folders : [];
+    out.folders = normalizeOrder(Array.isArray(vault.folders) ? vault.folders : []);
     out.entries = Array.isArray(vault.entries) ? vault.entries : [];
     return out;
   }
@@ -164,8 +203,112 @@ class VaultSession {
       const parent = this.data.folders.find((f) => f.id === parentId);
       if (!parent) throw new Error('上级目录不存在');
     }
-    const folder = { id: makeId(), name: clean, parentId: parentId || null, createdAt: now() };
+    const folder = {
+      id: makeId(),
+      name: clean,
+      parentId: parentId || null,
+      order: this.nextOrder(parentId),
+      createdAt: now(),
+    };
     this.data.folders.push(folder);
+    this.save();
+    return folder;
+  }
+
+  /**
+   * 调整目录顺序：把 id 放到 targetId 之前或之后。
+   * 只允许在同一父级内调整，避免拖动时误改层级。
+   */
+  reorderFolder(id, targetId, position = 'before') {
+    const folder = this.data.folders.find((f) => f.id === id);
+    if (!folder) throw new Error('目录不存在');
+    const target = this.data.folders.find((f) => f.id === targetId);
+    if (!target) throw new Error('目标目录不存在');
+    if (folder.id === target.id) return folder;
+    if (parentOf(folder) !== parentOf(target)) {
+      throw new Error('只能在同级目录之间调整顺序');
+    }
+
+    const siblings = this.data.folders
+      .filter((f) => parentOf(f) === parentOf(folder))
+      .sort(compareSiblings);
+    const rest = siblings.filter((f) => f.id !== folder.id);
+    let index = rest.findIndex((f) => f.id === target.id);
+    if (index < 0) return folder;
+    if (position === 'after') index += 1;
+    rest.splice(index, 0, folder);
+    rest.forEach((item, i) => {
+      item.order = i;
+    });
+
+    this.save();
+    return folder;
+  }
+
+  /** 把目录上移/下移一格（用于右键菜单，与拖动等价） */
+  nudgeFolder(id, delta) {
+    const folder = this.data.folders.find((f) => f.id === id);
+    if (!folder) throw new Error('目录不存在');
+    const siblings = this.data.folders
+      .filter((f) => parentOf(f) === parentOf(folder))
+      .sort(compareSiblings);
+    const from = siblings.findIndex((f) => f.id === id);
+    const to = from + (delta < 0 ? -1 : 1);
+    if (from < 0 || to < 0 || to >= siblings.length) return folder;
+
+    const [moved] = siblings.splice(from, 1);
+    siblings.splice(to, 0, moved);
+    siblings.forEach((item, i) => {
+      item.order = i;
+    });
+
+    this.save();
+    return moved;
+  }
+
+  /** 该目录及其所有子孙目录的 id */
+  subtreeIds(id) {
+    const ids = new Set([id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const f of this.data.folders) {
+        if (f.parentId && ids.has(f.parentId) && !ids.has(f.id)) {
+          ids.add(f.id);
+          grew = true;
+        }
+      }
+    }
+    return ids;
+  }
+
+  /** 某个父级下追加到末尾时应使用的 order */
+  nextOrder(parentId) {
+    return (
+      this.data.folders
+        .filter((f) => parentOf(f) === (parentId || null))
+        .reduce((max, f) => Math.max(max, Number.isFinite(f.order) ? f.order : -1), -1) + 1
+    );
+  }
+
+  /**
+   * 把目录移动到另一个目录下（parentId 为 null 表示移到顶层）。
+   * 连同其所有子目录一起移动，并排到新父级的末尾。
+   */
+  moveFolder(id, parentId = null) {
+    const folder = this.data.folders.find((f) => f.id === id);
+    if (!folder) throw new Error('目录不存在');
+    const target = parentId || null;
+    if (target) {
+      if (!this.data.folders.some((f) => f.id === target)) throw new Error('目标目录不存在');
+      if (this.subtreeIds(id).has(target)) throw new Error('不能移动到自身或子目录下');
+    }
+    if (parentOf(folder) === target) return folder;
+
+    // 先算序号再改 parentId，否则会把自己算进目标父级的兄弟里
+    const order = this.nextOrder(target);
+    folder.parentId = target;
+    folder.order = order;
     this.save();
     return folder;
   }

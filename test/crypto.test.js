@@ -156,6 +156,181 @@ async function main() {
     fresh.lock();
   });
 
+  console.log('\n[folder order]');
+  const dir3 = fs.mkdtempSync(path.join(os.tmpdir(), 'keynest-order-'));
+  const store3 = new VaultStore(dir3);
+  const s3 = new VaultSession(store3);
+  const MASTER3 = 'Order-Test-Master-2026';
+
+  test('新建目录自带递增 order', () => {
+    s3.create(MASTER3);
+    const roots = s3.snapshot().folders.filter((f) => !f.parentId);
+    assert.deepStrictEqual(
+      roots.map((f) => f.name),
+      ['社交', '办公', '金融']
+    );
+    assert.deepStrictEqual(
+      roots.map((f) => f.order),
+      [0, 1, 2]
+    );
+    const extra = s3.createFolder('其它');
+    assert.strictEqual(extra.order, 3);
+    s3.deleteFolder(extra.id);
+  });
+
+  test('拖到目标之前/之后都会改写顺序', () => {
+    const byName = (n) => s3.snapshot().folders.find((f) => f.name === n && !f.parentId);
+    const social = byName('社交');
+    const finance = byName('金融');
+
+    // 把「社交」拖到「金融」之后 → 办公、金融、社交
+    s3.reorderFolder(social.id, finance.id, 'after');
+    assert.deepStrictEqual(
+      s3.snapshot().folders.filter((f) => !f.parentId).sort((a, b) => a.order - b.order).map((f) => f.name),
+      ['办公', '金融', '社交']
+    );
+
+    // 再拖到「办公」之前 → 社交、办公、金融
+    const office = byName('办公');
+    s3.reorderFolder(social.id, office.id, 'before');
+    assert.deepStrictEqual(
+      s3.snapshot().folders.filter((f) => !f.parentId).sort((a, b) => a.order - b.order).map((f) => f.name),
+      ['社交', '办公', '金融']
+    );
+  });
+
+  test('order 连续且无重复', () => {
+    const orders = s3.snapshot().folders.filter((f) => !f.parentId).map((f) => f.order).sort((a, b) => a - b);
+    assert.deepStrictEqual(orders, [0, 1, 2]);
+  });
+
+  test('上移/下移在边界处不动', () => {
+    const social = s3.snapshot().folders.find((f) => f.name === '社交' && !f.parentId);
+    s3.nudgeFolder(social.id, -1); // 已在首位
+    assert.strictEqual(s3.snapshot().folders.find((f) => f.id === social.id).order, 0);
+
+    s3.nudgeFolder(social.id, 1);
+    assert.strictEqual(s3.snapshot().folders.find((f) => f.id === social.id).order, 1);
+    s3.nudgeFolder(social.id, -1);
+
+    const finance = s3.snapshot().folders.find((f) => f.name === '金融' && !f.parentId);
+    s3.nudgeFolder(finance.id, 1); // 已在末位
+    assert.strictEqual(s3.snapshot().folders.find((f) => f.id === finance.id).order, 2);
+  });
+
+  test('不允许跨层级拖动', () => {
+    const office = s3.snapshot().folders.find((f) => f.name === '办公' && !f.parentId);
+    const child = s3.createFolder('邮箱', office.id);
+    assert.throws(() => s3.reorderFolder(child.id, office.id, 'before'), /同级/);
+  });
+
+  test('顺序在重新解锁后仍然保持', () => {
+    const finance = s3.snapshot().folders.find((f) => f.name === '金融' && !f.parentId);
+    const social = s3.snapshot().folders.find((f) => f.name === '社交' && !f.parentId);
+    s3.reorderFolder(finance.id, social.id, 'before'); // 金融、社交、办公
+    s3.lock();
+
+    const reopened = new VaultSession(store3);
+    reopened.unlock(MASTER3);
+    const roots = reopened.snapshot().folders.filter((f) => !f.parentId).sort((a, b) => a.order - b.order);
+    assert.deepStrictEqual(
+      roots.map((f) => f.name),
+      ['金融', '社交', '办公']
+    );
+    reopened.lock();
+  });
+
+  test('旧数据没有 order 时按创建时间补齐', () => {
+    const legacy = new VaultSession(store3);
+    const normalized = legacy.normalizeVault({
+      folders: [
+        { id: 'b', name: 'B', parentId: null, createdAt: '2026-01-02T00:00:00.000Z' },
+        { id: 'a', name: 'A', parentId: null, createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'c', name: 'C', parentId: 'a', createdAt: '2026-01-03T00:00:00.000Z' },
+      ],
+      entries: [],
+    });
+    assert.deepStrictEqual(
+      normalized.folders.filter((f) => !f.parentId).map((f) => f.name),
+      ['A', 'B']
+    );
+    assert.deepStrictEqual(
+      normalized.folders.filter((f) => !f.parentId).map((f) => f.order),
+      [0, 1]
+    );
+    assert.strictEqual(normalized.folders.find((f) => f.id === 'c').order, 0);
+  });
+
+  fs.rmSync(dir3, { recursive: true, force: true });
+
+  console.log('\n[folder move]');
+  const dir4 = fs.mkdtempSync(path.join(os.tmpdir(), 'keynest-move-'));
+  const store4 = new VaultStore(dir4);
+  const s4 = new VaultSession(store4);
+  const MASTER4 = 'Move-Test-Master-2026';
+  const byName = (n) => s4.snapshot().folders.find((f) => f.name === n);
+
+  test('移动到另一个目录下', () => {
+    s4.create(MASTER4);
+    const social = byName('社交');
+    const office = byName('办公');
+    const inbox = s4.createFolder('邮箱', office.id);
+    const entry = s4.createEntry({ folderId: inbox.id, title: 'Gmail', password: 'x' });
+
+    s4.moveFolder(inbox.id, social.id);
+    const moved = s4.snapshot().folders.find((f) => f.id === inbox.id);
+    assert.strictEqual(moved.parentId, social.id);
+    assert.strictEqual(moved.order, 0, '应排到新父级的末尾（首个）');
+    // 条目归属不变
+    assert.strictEqual(s4.snapshot().entries.find((e) => e.id === entry.id).folderId, inbox.id);
+  });
+
+  test('子目录随父目录一起移动', () => {
+    const social = byName('社交');
+    const inbox = byName('邮箱');
+    const inner = s4.createFolder('工作邮箱', inbox.id);
+    s4.moveFolder(inbox.id, social.id);
+    const all = s4.snapshot().folders;
+    assert.strictEqual(all.find((f) => f.id === inbox.id).parentId, social.id);
+    assert.strictEqual(all.find((f) => f.id === inner.id).parentId, inbox.id);
+  });
+
+  test('可以移动到根目录', () => {
+    const inbox = byName('邮箱');
+    s4.moveFolder(inbox.id, null);
+    assert.strictEqual(s4.snapshot().folders.find((f) => f.id === inbox.id).parentId, null);
+  });
+
+  test('不能移动到自身或自己的子目录', () => {
+    const inbox = byName('邮箱');
+    const inner = byName('工作邮箱');
+    assert.throws(() => s4.moveFolder(inbox.id, inbox.id), /自身或子目录/);
+    assert.throws(() => s4.moveFolder(inbox.id, inner.id), /自身或子目录/);
+  });
+
+  test('目标不存在时报错', () => {
+    const inbox = byName('邮箱');
+    assert.throws(() => s4.moveFolder(inbox.id, 'no-such-folder'), /目标目录不存在/);
+  });
+
+  test('移动结果在重新解锁后保持', () => {
+    const inbox = byName('邮箱');
+    const finance = byName('金融');
+    s4.moveFolder(inbox.id, finance.id);
+    s4.lock();
+
+    const reopened = new VaultSession(store4);
+    reopened.unlock(MASTER4);
+    const all = reopened.snapshot().folders;
+    const moved = all.find((f) => f.name === '邮箱');
+    assert.strictEqual(moved.parentId, all.find((f) => f.name === '金融').id);
+    assert.strictEqual(all.find((f) => f.name === '工作邮箱').parentId, moved.id);
+    assert.strictEqual(reopened.snapshot().entries.length, 1);
+    reopened.lock();
+  });
+
+  fs.rmSync(dir4, { recursive: true, force: true });
+
   console.log('\n[settings]');
   const { DEFAULTS, normalize, applyPatch } = require('../src/main/settings');
 

@@ -106,6 +106,49 @@ async function main() {
       const item = [...document.querySelectorAll('.menu-item')].find(i => i.textContent.trim() === label);
       item.click();
     };
+    window.__roots = () => [...document.querySelectorAll('.tree-row')]
+      .filter(r => r.style.getPropertyValue('--depth') === '0')
+      .map(r => r.querySelector('.folder-name').textContent.trim());
+    window.__moveMenu = (name) => {
+      __row(name).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 240 }));
+      const item = [...document.querySelectorAll('.menu-item')].find(i => i.textContent.includes('移动到'));
+      if (item) item.click();
+      return Boolean(item);
+    };
+    window.__moveItems = () => [...document.querySelectorAll('.move-item')]
+      .map(b => b.querySelector('.move-name').textContent.trim());
+    window.__moveCurrent = () => [...document.querySelectorAll('.move-item.current')]
+      .map(b => b.querySelector('.move-name').textContent.trim());
+    window.__movePick = (name) => {
+      const btn = [...document.querySelectorAll('.move-item')]
+        .find(b => b.querySelector('.move-name').textContent.trim() === name);
+      if (!btn) return false;
+      btn.click();
+      return !document.getElementById('m-ok').disabled;
+    };
+    window.__parentOf = async (name) => {
+      const r = await window.keynest.snapshot();
+      const f = r.data.folders.find(x => x.name === name);
+      if (!f) return 'missing';
+      if (!f.parentId) return 'root';
+      const p = r.data.folders.find(x => x.id === f.parentId);
+      return p ? p.name : 'broken';
+    };
+    window.__drag = (fromName, toName, where) => {
+      const from = __row(fromName);
+      const to = __row(toName);
+      if (!from || !to) return { ok: false, marker: false };
+      const dt = new DataTransfer();
+      from.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+      const box = to.getBoundingClientRect();
+      const y = where === 'after' ? box.bottom - 3 : box.top + 3;
+      const opts = { bubbles: true, cancelable: true, dataTransfer: dt, clientY: y, clientX: box.left + 40 };
+      to.dispatchEvent(new DragEvent('dragover', opts));
+      const marker = to.classList.contains('drop-' + where);
+      to.dispatchEvent(new DragEvent('drop', opts));
+      from.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+      return { ok: true, marker };
+    };
   `;
 
   await sleep(800);
@@ -207,6 +250,100 @@ async function main() {
   `);
   await sleep(600);
   report('目录重命名', Boolean(await js(`return !!__row('邮箱账号');`)));
+
+  console.log('\n[拖动排序]');
+  const rootsBefore = await js(`return __roots().join(',');`);
+  report('默认同级顺序按创建先后', rootsBefore === '社交,办公,金融', rootsBefore);
+
+  const dragResult = await js(`return JSON.stringify(__drag('社交', '金融', 'after'));`);
+  const drag = JSON.parse(dragResult);
+  report('拖动时显示插入位置提示', drag.marker === true, dragResult);
+  await sleep(700);
+  const rootsAfter = await js(`return __roots().join(',');`);
+  report('拖到目标之后可调整顺序', rootsAfter === '办公,金融,社交', rootsAfter);
+
+  const cross = JSON.parse(await js(`return JSON.stringify(__drag('金融', '邮箱账号', 'after'));`));
+  report('跨层级拖动不显示提示', cross.marker === false, JSON.stringify(cross));
+  await sleep(400);
+  report('跨层级拖动不改变顺序', (await js(`return __roots().join(',');`)) === '办公,金融,社交');
+
+  await js(`__drag('社交', '办公', 'before');`);
+  await sleep(700);
+  report('拖到目标之前可调整顺序', (await js(`return __roots().join(',');`)) === '社交,办公,金融');
+
+  await js(`__drag('金融', '办公', 'before');`);
+  await sleep(700);
+  const rootsDragged = await js(`return __roots().join(',');`);
+  report('连续拖动结果正确', rootsDragged === '社交,金融,办公', rootsDragged);
+
+  const markerGone = await js(`return document.querySelectorAll('.drop-before,.drop-after,.dragging').length;`);
+  report('拖动结束后不残留提示', markerGone === 0, String(markerGone));
+
+  // 右键菜单的上移/下移
+  await js(`__menu(__row('金融'), '上移');`);
+  await sleep(600);
+  const afterNudge = await js(`return __roots().join(',');`);
+  report('右键菜单上移生效', afterNudge === '金融,社交,办公', afterNudge);
+
+  await js(`__menu(__row('金融'), '上移');`);
+  await sleep(600);
+  report('首位再上移不越界', (await js(`return __roots().join(',');`)) === '金融,社交,办公');
+  const disabledFirst = await js(`
+    __row('金融').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 240 }));
+    const item = [...document.querySelectorAll('.menu-item')].find(i => i.textContent.trim() === '上移');
+    const isDisabled = item.classList.contains('disabled');
+    document.body.click();
+    return isDisabled;
+  `);
+  report('首位目录的上移项被禁用', disabledFirst === true, String(disabledFirst));
+
+  await js(`__menu(__row('办公'), '下移');`);
+  await sleep(600);
+  report('末位再下移不越界', (await js(`return __roots().join(',');`)) === '金融,社交,办公');
+  const rootOrderBeforeLock = await js(`return __roots().join(',');`);
+
+  console.log('\n[移动目录]');
+  const hasMoveItem = await js(`return __moveMenu('邮箱账号');`);
+  report('右键菜单含「移动到…」', hasMoveItem === true, String(hasMoveItem));
+  await sleep(400);
+
+  const moveItems = (await js(`return __moveItems().join('|');`)).split('|');
+  report('目标列表首项为根目录', moveItems[0] === '根目录（顶层）', moveItems.join('|'));
+  report('目标列表排除自身', !moveItems.includes('邮箱账号'), moveItems.join('|'));
+  report('目标列表排除自己的子目录', !moveItems.includes('客户系统'), moveItems.join('|'));
+  const currentTag = await js(`return __moveCurrent().join('|');`);
+  report('当前所在位置被标记且不可选', currentTag === '办公', currentTag);
+  report('未选目标时提交按钮禁用', (await js(`return document.getElementById('m-ok').disabled;`)) === true);
+
+  report('选择目标后按钮可用', (await js(`return __movePick('社交');`)) === true);
+  await js(`document.getElementById('m-ok').click();`);
+  await sleep(900);
+  report('可移动到其他目录下', (await jsAsync(`return await __parentOf('邮箱账号');`)) === '社交');
+  report('子目录随父目录一起移动', (await jsAsync(`return await __parentOf('客户系统');`)) === '邮箱账号');
+  report('移动后目录仍在树中可见', Boolean(await js(`return !!__row('邮箱账号');`)));
+  const movedDepth = await js(`return __row('邮箱账号').style.getPropertyValue('--depth');`);
+  report('移动后层级缩进正确', movedDepth === '1', movedDepth);
+
+  await js(`__moveMenu('邮箱账号');`);
+  await sleep(400);
+  await js(`__movePick('办公');`);
+  await js(`document.getElementById('m-ok').click();`);
+  await sleep(900);
+  report('可以移回原目录', (await jsAsync(`return await __parentOf('邮箱账号');`)) === '办公');
+
+  await js(`__moveMenu('客户系统');`);
+  await sleep(400);
+  await js(`__movePick('根目录（顶层）');`);
+  await js(`document.getElementById('m-ok').click();`);
+  await sleep(900);
+  report('可以移动到根目录', (await jsAsync(`return await __parentOf('客户系统');`)) === 'root');
+
+  await js(`__moveMenu('客户系统');`);
+  await sleep(400);
+  await js(`__movePick('邮箱账号');`);
+  await js(`document.getElementById('m-ok').click();`);
+  await sleep(900);
+  report('可从根目录移回子目录', (await jsAsync(`return await __parentOf('客户系统');`)) === '邮箱账号');
 
   console.log('\n[条目]');
   await js(`__row('邮箱账号').click();`);
@@ -352,6 +489,13 @@ async function main() {
     return [...document.querySelectorAll('.tree-row .folder-name')].map(e => e.textContent.trim()).join(',');
   `);
   report('重新解锁后数据保持一致', /社交/.test(persisted) && /金融/.test(persisted) && !/办公/.test(persisted), persisted);
+
+  const rootsAfterUnlock = await js(`return __roots().join(',');`);
+  report(
+    '自定义顺序在重新解锁后保持',
+    rootsAfterUnlock === '金融,社交',
+    `${rootsAfterUnlock}（锁定前：${rootOrderBeforeLock}，其中办公已删除）`
+  );
 
   await shot('smoke-final.png');
 
