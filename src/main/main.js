@@ -63,8 +63,13 @@ function lockdownSession(target) {
   target.setSpellCheckerEnabled(false);
 }
 
+// 单实例：已经有 Keynest 在运行时，本次启动直接退出，
+// 由已运行的实例把窗口唤到前台。这里必须 return，
+// 否则下面的 whenReady 仍会建出一个随退出一起销毁的窗口，
+// 表现为「任务管理器有进程，但看不到窗口」。
 if (!app.requestSingleInstanceLock()) {
-  app.quit();
+  app.exit(0);
+  return;
 }
 
 /** 支持便携模式：用 KEYNEST_DATA_DIR 指定密码库存放目录 */
@@ -391,10 +396,11 @@ function registerIpc() {
 // ---------------- 生命周期 ----------------
 
 app.on('second-instance', () => {
-  if (win) {
-    if (win.isMinimized()) win.restore();
-    win.focus();
-  }
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.moveTop();
+  win.focus();
 });
 
 app.whenReady().then(async () => {

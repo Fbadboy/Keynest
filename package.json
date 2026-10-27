@@ -1,7 +1,7 @@
 {
   "name": "keynest",
   "productName": "Keynest",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "极简本地密码管理器 · AES-256-GCM 加密存储",
   "main": "src/main/main.js",
   "author": "Keynest",
