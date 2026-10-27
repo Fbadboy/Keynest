@@ -11,6 +11,7 @@
   --panel-3: #191e26;
   --line: #1d222a;
   --line-soft: #171b21;
+  --guide: #2b323c;
   --text: #e7e9ee;
   --muted: #79818f;
   --faint: #4c535f;
@@ -69,6 +70,7 @@
   --panel-3: #e4e8ef;
   --line: #dde2ea;
   --line-soft: #eaedf2;
+  --guide: #ccd4e0;
   --text: #1a1e26;
   --muted: #5c6572;
   --faint: #98a2b1;
@@ -1031,7 +1033,7 @@ select.input {
   height: 14px;
 }
 
-/* 移动目录的目标选择列表 */
+/* 移动目录的目标选择列表：嵌套结构 + 左侧竖线体现层级 */
 .move-list {
   max-height: 244px;
   overflow-y: auto;
@@ -1041,16 +1043,26 @@ select.input {
   background: var(--panel-2);
 }
 
+.move-node {
+  min-width: 0;
+}
+
+.move-children {
+  margin-left: 9px;
+  padding-left: 9px;
+  border-left: 1px solid var(--guide);
+}
+
 .move-item {
   appearance: none;
   width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 30px;
-  padding: 0 8px 0 calc(8px + var(--depth, 0) * 14px);
+  height: 28px;
+  padding: 0 8px;
   border: none;
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
   font-size: 12.8px;

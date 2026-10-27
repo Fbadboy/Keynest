@@ -303,6 +303,29 @@ async function main() {
   const rootOrderBeforeLock = await js(`return __roots().join(',');`);
 
   console.log('\n[移动目录]');
+  // 先看层级呈现：以「社交」为对象，列表里应完整包含 办公 > 邮箱账号 > 客户系统
+  await js(`__moveMenu('社交');`);
+  await sleep(400);
+  const geo = JSON.parse(
+    await js(`
+      const left = (n) => {
+        const b = [...document.querySelectorAll('.move-item')]
+          .find(x => x.querySelector('.move-name').textContent.trim() === n);
+        return b ? Math.round(b.getBoundingClientRect().left) : -1;
+      };
+      return JSON.stringify({
+        root: left('办公'),
+        lvl1: left('邮箱账号'),
+        lvl2: left('客户系统'),
+        rails: document.querySelectorAll('.move-children').length,
+      });
+    `)
+  );
+  report('目标列表按层级递进缩进', geo.root < geo.lvl1 && geo.lvl1 < geo.lvl2, JSON.stringify(geo));
+  report('目标列表用嵌套竖线串联层级', geo.rails >= 2, String(geo.rails));
+  await js(`document.getElementById('m-cancel').click();`);
+  await sleep(300);
+
   const hasMoveItem = await js(`return __moveMenu('邮箱账号');`);
   report('右键菜单含「移动到…」', hasMoveItem === true, String(hasMoveItem));
   await sleep(400);

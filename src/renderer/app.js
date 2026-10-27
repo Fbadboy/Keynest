@@ -106,20 +106,6 @@ function subtreeIds(id) {
   return ids;
 }
 
-/** 可作为移动目标的目录（按树序展开，排除自身与子孙） */
-function destinationList(excludeIds) {
-  const out = [];
-  const walk = (parentId, depth) => {
-    for (const folder of childrenOf(parentId)) {
-      if (excludeIds.has(folder.id)) continue;
-      out.push({ folder, depth });
-      walk(folder.id, depth + 1);
-    }
-  };
-  walk(null, 0);
-  return out;
-}
-
 function folderPath(id) {
   const parts = [];
   let current = folderById(id);
@@ -838,29 +824,41 @@ async function renameFolderFlow(folder) {
 
 async function moveFolderFlow(folder) {
   const blocked = subtreeIds(folder.id);
-  const destinations = destinationList(blocked);
   const currentParent = folder.parentId || null;
 
-  const item = (id, name, depth, isCurrent) => `
+  const item = (id, name, isCurrent) => `
     <button
       class="move-item${isCurrent ? ' current' : ''}"
       data-id="${esc(id)}"
-      style="--depth:${depth}"
       ${isCurrent ? 'disabled' : ''}
     >
       <span class="move-name">${esc(name)}</span>
       ${isCurrent ? '<span class="move-tag">当前位置</span>' : ''}
     </button>`;
 
-  const rows = [item('', '根目录（顶层）', 0, currentParent === null)];
-  for (const entry of destinations) {
-    rows.push(item(entry.folder.id, entry.folder.name, entry.depth + 1, entry.folder.id === currentParent));
-  }
+  // 用嵌套结构还原层级，靠左侧竖线串起父子关系
+  const renderChildren = (parentId) => {
+    const kids = childrenOf(parentId).filter((f) => !blocked.has(f.id));
+    if (!kids.length) return '';
+    return kids
+      .map((child) => {
+        const grand = renderChildren(child.id);
+        return `<div class="move-node">${item(child.id, child.name, child.id === currentParent)}${
+          grand ? `<div class="move-children">${grand}</div>` : ''
+        }</div>`;
+      })
+      .join('');
+  };
+
+  const tree = renderChildren(null);
 
   const modal = openModal(`
     <h3>移动「${esc(folder.name)}」</h3>
     <p class="modal-desc">选择目标位置，该目录及其所有子目录会一起移动。</p>
-    <div class="move-list" id="move-list">${rows.join('')}</div>
+    <div class="move-list" id="move-list">
+      <div class="move-node">${item('', '根目录（顶层）', currentParent === null)}</div>
+      ${tree ? `<div class="move-children">${tree}</div>` : ''}
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="m-cancel">取消</button>
       <button class="btn btn-primary" id="m-ok" disabled>移动</button>
