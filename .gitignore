@@ -1,0 +1,22 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/*.tmp
+
+# 本地运行/调试产物
+.preview-data/
+.preview/
+.smoke-data/
+.tmp-*/
+*.log
+
+# 密码库数据（绝不入库）
+/vault.dat
+/settings.json
+*.vault
+
+# 工具与系统
+.workbuddy-ai/
+.DS_Store
+Thumbs.db
+desktop.ini

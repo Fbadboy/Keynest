@@ -1,0 +1,65 @@
+{
+  "name": "keynest",
+  "productName": "Keynest",
+  "version": "1.0.0",
+  "description": "极简本地密码管理器 · AES-256-GCM 加密存储",
+  "main": "src/main/main.js",
+  "author": "Keynest",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "node tools/launch.js",
+    "dev": "node tools/launch.js --dev",
+    "test": "node test/crypto.test.js",
+    "test:crypto": "node test/crypto.test.js",
+    "build": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^26.18.0",
+    "ws": "^8.22.0"
+  },
+  "build": {
+    "appId": "com.keynest.app",
+    "productName": "Keynest",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.ico",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "src/main/scripts/**"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Keynest"
+    },
+    "portable": {
+      "artifactName": "Keynest-${version}-portable.exe"
+    }
+  }
+}
